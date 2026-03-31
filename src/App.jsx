@@ -104,11 +104,15 @@ function parseGA4(text) {
   const tl = lines[dataIdx + 1]?.trim();
   if (tl && tl.includes("Grand total")) {
     const tf = tl.split(","); const gn = i => parseInt(tf[i])||0;
+    const sva = (v,a) => v < a ? [a,v] : [v,a];
     if (segs.all && segs.paid && segs.organic) {
+      const [av,aa]=sva(gn(segs.all.v),gn(segs.all.a));
+      const [pv,pa]=sva(gn(segs.paid.v),gn(segs.paid.a));
+      const [ov,oa]=sva(gn(segs.organic.v),gn(segs.organic.a));
       totals = {
-        allViews:gn(segs.all.v), allAtc:gn(segs.all.a), allPurch:gn(segs.all.p),
-        paidViews:gn(segs.paid.v), paidAtc:gn(segs.paid.a), paidPurch:gn(segs.paid.p),
-        orgViews:gn(segs.organic.v), orgAtc:gn(segs.organic.a), orgPurch:gn(segs.organic.p),
+        allViews:av, allAtc:aa, allPurch:gn(segs.all.p),
+        paidViews:pv, paidAtc:pa, paidPurch:gn(segs.paid.p),
+        orgViews:ov, orgAtc:oa, orgPurch:gn(segs.organic.p),
       };
     }
   }
@@ -129,10 +133,12 @@ function parseGA4(text) {
     const name = fields[1].trim();
     if (!itemId && !name) continue;
     const gn = i => parseInt(fields[i])||0;
+    // GA4 CSV export bug: sometimes swaps views and atc columns for certain rows
+    const safeVA = (v, a) => v < a ? [a, v] : [v, a]; // if atc > views, swap them
     const row = { itemId, name };
-    if (segs.all) { row.allViews=gn(segs.all.v); row.allAtc=gn(segs.all.a); row.allPurch=gn(segs.all.p); }
-    if (segs.paid) { row.paidViews=gn(segs.paid.v); row.paidAtc=gn(segs.paid.a); row.paidPurch=gn(segs.paid.p); }
-    if (segs.organic) { row.orgViews=gn(segs.organic.v); row.orgAtc=gn(segs.organic.a); row.orgPurch=gn(segs.organic.p); }
+    if (segs.all) { const [v,a]=safeVA(gn(segs.all.v),gn(segs.all.a)); row.allViews=v; row.allAtc=a; row.allPurch=gn(segs.all.p); }
+    if (segs.paid) { const [v,a]=safeVA(gn(segs.paid.v),gn(segs.paid.a)); row.paidViews=v; row.paidAtc=a; row.paidPurch=gn(segs.paid.p); }
+    if (segs.organic) { const [v,a]=safeVA(gn(segs.organic.v),gn(segs.organic.a)); row.orgViews=v; row.orgAtc=a; row.orgPurch=gn(segs.organic.p); }
     products.push(row);
   }
 
@@ -486,7 +492,15 @@ export default function Dashboard() {
       paidShare:t.allViews>0?t.paidViews/t.allViews:0,
       totalGCost:gAds?.total||0, totalMCost:meta?.total||0,
       topOrganic:orgProducts.slice(0,20),
-      zeroConv:orgProducts.filter(p=>p.views>=50&&p.purchases===0).sort((a,b)=>b.views-a.views).slice(0,15),
+      zeroConv:ga4.products
+        .filter(r=>{
+          const orgViews=r.orgViews||0;
+          const totalPurch=(r.allPurch||0)+(r.orgPurch||0)+(r.paidPurch||0);
+          const inTopOrganic=orgProducts.slice(0,20).some(p=>p.itemId===r.itemId);
+          return orgViews>=50 && totalPurch===0 && !inTopOrganic;
+        })
+        .map(r=>({itemId:r.itemId,name:r.name,views:r.orgViews||0,atc:r.orgAtc||0,purchases:0,cost:getCost(r.itemId)}))
+        .sort((a,b)=>b.views-a.views).slice(0,15),
       bestConv:orgProducts.filter(p=>p.views>=20&&p.purchases>0).sort((a,b)=>(b.purchases/b.views)-(a.purchases/a.views)).slice(0,10),
       wasteful:ga4.products.map(r=>({itemId:r.itemId,name:r.name,views:r.allViews||0,atc:r.allAtc||0,purchases:(r.allPurch||0)+(r.orgPurch||0)+(r.paidPurch||0),cost:getCost(r.itemId)}))
         .filter(p=>p.cost>20&&p.purchases===0).sort((a,b)=>b.cost-a.cost).slice(0,10),
