@@ -488,7 +488,7 @@ export default function Dashboard() {
       topOrganic:orgProducts.slice(0,20),
       zeroConv:orgProducts.filter(p=>p.views>=50&&p.purchases===0).sort((a,b)=>b.views-a.views).slice(0,15),
       bestConv:orgProducts.filter(p=>p.views>=20&&p.purchases>0).sort((a,b)=>(b.purchases/b.views)-(a.purchases/a.views)).slice(0,10),
-      wasteful:ga4.products.map(r=>({itemId:r.itemId,name:r.name,views:r.allViews||0,atc:r.allAtc||0,purchases:r.allPurch||0,cost:getCost(r.itemId)}))
+      wasteful:ga4.products.map(r=>({itemId:r.itemId,name:r.name,views:r.allViews||0,atc:r.allAtc||0,purchases:(r.allPurch||0)+(r.orgPurch||0)+(r.paidPurch||0),cost:getCost(r.itemId)}))
         .filter(p=>p.cost>20&&p.purchases===0).sort((a,b)=>b.cost-a.cost).slice(0,10),
     };
   }, [ga4,gAds,meta]);
