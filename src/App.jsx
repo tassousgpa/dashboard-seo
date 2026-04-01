@@ -1,4 +1,4 @@
-import { useState, useMemo, useCallback, useEffect } from "react";
+import { useState, useMemo, useCallback, useEffect, useRef } from "react";
 
 /* ───────── CONFIG ───────── */
 const SUPA_URL = "https://cikbkbhniglwgdwvnqza.supabase.co";
@@ -128,6 +128,68 @@ const fmt=n=>{if(n==null||isNaN(n))return"–";if(n>=1e6)return(n/1e6).toFixed(1
 const pct=n=>n==null||isNaN(n)?"–":(n*100).toFixed(2)+"%";
 const euro=n=>n==null||isNaN(n)?"–":Math.round(n).toLocaleString("fr-FR")+" €";
 
+
+/* ───────── PDF EXPORT ───────── */
+async function loadScript(src){
+  return new Promise((res,rej)=>{
+    if(document.querySelector(`script[src="${src}"]`)){res();return;}
+    const s=document.createElement("script");s.src=src;s.onload=res;s.onerror=rej;document.head.appendChild(s);
+  });
+}
+
+async function exportPDF(periodLabel,pdfRef){
+  if(!pdfRef.current)return;
+  // Load libs
+  await loadScript("https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js");
+  await loadScript("https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js");
+  const{jsPDF}=window.jspdf;
+
+  const A4_W=210,A4_H=297,MARGIN=12;
+  const contentW=A4_W-MARGIN*2;
+  const pdf=new jsPDF({orientation:"portrait",unit:"mm",format:"a4"});
+
+  // Cover header
+  pdf.setFillColor(27,42,74);
+  pdf.rect(0,0,210,28,"F");
+  pdf.setTextColor(255,255,255);
+  pdf.setFontSize(14);pdf.setFont("helvetica","bold");
+  pdf.text("Dashboard E-commerce · BestMobilier",MARGIN,12);
+  pdf.setFontSize(9);pdf.setFont("helvetica","normal");
+  pdf.text(periodLabel,MARGIN,20);
+  pdf.setTextColor(0,0,0);
+
+  let curY=34;
+
+  // Get all pdf sections
+  const sections=pdfRef.current.querySelectorAll("[data-pdf-section]");
+
+  for(const section of sections){
+    // canvas at 2x for sharpness
+    const canvas=await window.html2canvas(section,{scale:2,useCORS:true,backgroundColor:"#ffffff",logging:false});
+    const imgW=contentW;
+    const imgH=(canvas.height/canvas.width)*imgW;
+
+    // If section doesn't fit remaining space on page → new page
+    if(curY+imgH>A4_H-MARGIN){
+      pdf.addPage();
+      // Repeat mini header on subsequent pages
+      pdf.setFillColor(27,42,74);
+      pdf.rect(0,0,210,12,"F");
+      pdf.setTextColor(255,255,255);
+      pdf.setFontSize(7);pdf.setFont("helvetica","normal");
+      pdf.text(`BestMobilier · ${periodLabel}`,MARGIN,8);
+      pdf.setTextColor(0,0,0);
+      curY=16;
+    }
+
+    const imgData=canvas.toDataURL("image/png");
+    pdf.addImage(imgData,"PNG",MARGIN,curY,imgW,imgH);
+    curY+=imgH+6;
+  }
+
+  pdf.save(`BestMobilier_${periodLabel.replace(/[^a-zA-Z0-9]/g,"_")}.pdf`);
+}
+
 /* ───────── COMPONENTS ───────── */
 function DropZone({label,hint,icon,loaded,fileName,dateRange,onFiles,accept,color=C.blue}){
   const[drag,setDrag]=useState(false);
@@ -228,6 +290,125 @@ function HistoryChart({history}){
   );
 }
 
+
+/* ───────── AGGREGATE PRODUCT ROWS FROM SNAPSHOTS ───────── */
+function aggregateSnapshots(snaps){
+  // Merge product_rows from multiple snapshots, summing numeric fields per itemId
+  const map={};
+  for(const snap of snaps){
+    const rows=snap.product_rows||[];
+    for(const r of rows){
+      const id=r.itemId||r.item_id||"";
+      if(!id)continue;
+      if(!map[id])map[id]={itemId:id,name:r.name||"",allViews:0,allAtc:0,allPurch:0,paidViews:0,paidAtc:0,paidPurch:0,orgViews:0,orgAtc:0,orgPurch:0};
+      const e=map[id];
+      e.allViews+=r.allViews||0; e.allAtc+=r.allAtc||0; e.allPurch+=r.allPurch||0;
+      e.paidViews+=r.paidViews||0; e.paidAtc+=r.paidAtc||0; e.paidPurch+=r.paidPurch||0;
+      e.orgViews+=r.orgViews||0; e.orgAtc+=r.orgAtc||0; e.orgPurch+=r.orgPurch||0;
+    }
+  }
+  const products=Object.values(map);
+  const totals={allViews:0,allAtc:0,allPurch:0,paidViews:0,paidAtc:0,paidPurch:0,orgViews:0,orgAtc:0,orgPurch:0};
+  products.forEach(r=>{
+    totals.allViews+=r.allViews; totals.allAtc+=r.allAtc; totals.allPurch+=r.allPurch;
+    totals.paidViews+=r.paidViews; totals.paidAtc+=r.paidAtc; totals.paidPurch+=r.paidPurch;
+    totals.orgViews+=r.orgViews; totals.orgAtc+=r.orgAtc; totals.orgPurch+=r.orgPurch;
+  });
+  // Aggregate spend
+  const googleSpend=snaps.reduce((s,sn)=>s+(sn.google_spend||0),0);
+  const metaSpend=snaps.reduce((s,sn)=>s+(sn.meta_spend||0),0);
+  return{products,totals,googleSpend,metaSpend};
+}
+
+/* ───────── HISTORY SELECTOR ───────── */
+function HistorySelector({weeklyHist,ytdSnap,selectedSnaps,setSelectedSnaps,onAnalyse}){
+  const toggleWeek=id=>{
+    setSelectedSnaps(prev=>{
+      const next=new Set(prev);
+      // YTD and weekly are mutually exclusive
+      if(ytdSnap&&id===ytdSnap.id){return new Set([id]);}
+      // Remove YTD if selecting a week
+      if(ytdSnap)next.delete(ytdSnap.id);
+      if(next.has(id))next.delete(id);else next.add(id);
+      return next;
+    });
+  };
+
+  const selectYTD=()=>{if(ytdSnap)setSelectedSnaps(new Set([ytdSnap.id]));};
+  const clearAll=()=>setSelectedSnaps(new Set());
+
+  // Check consecutiveness
+  const selectedWeeks=weeklyHist.filter(s=>selectedSnaps.has(s.id)).sort((a,b)=>a.week_start.localeCompare(b.week_start));
+  let gapError=null;
+  for(let i=1;i<selectedWeeks.length;i++){
+    const prev=selectedWeeks[i-1];const curr=selectedWeeks[i];
+    const expected=addDays(prev.week_end,1);
+    if(curr.week_start>expected){gapError=`⚠️ Semaines non consécutives : gap entre ${fmtDate(prev.week_end)} et ${fmtDate(curr.week_start)}`;break;}
+  }
+
+  const isYTDSelected=ytdSnap&&selectedSnaps.has(ytdSnap.id);
+  const count=selectedSnaps.size;
+  const canAnalyse=count>0&&!gapError;
+
+  return(
+    <div style={{background:C.card,borderRadius:14,padding:20,boxShadow:"0 1px 4px rgba(0,0,0,0.07)",marginBottom:20,border:`2px solid ${C.blue}`}}>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:14}}>
+        <div>
+          <div style={{fontSize:13,fontWeight:700,color:C.navy}}>📂 Analyser depuis la base</div>
+          <div style={{fontSize:10,color:C.textLight,marginTop:2}}>Sélectionne une ou plusieurs semaines consécutives — les données seront cumulées</div>
+        </div>
+        {count>0&&<button onClick={clearAll} style={{fontSize:10,padding:"4px 10px",borderRadius:20,border:`1px solid ${C.red}`,cursor:"pointer",background:"#FEF2F2",color:C.red,fontWeight:600}}>Effacer</button>}
+      </div>
+
+      {/* Weekly checkboxes */}
+      {weeklyHist.length>0&&(
+        <div style={{display:"flex",flexDirection:"column",gap:6,marginBottom:12}}>
+          {weeklyHist.map(s=>{
+            const sel=selectedSnaps.has(s.id)&&!isYTDSelected;
+            return(
+              <div key={s.id} onClick={()=>toggleWeek(s.id)}
+                style={{display:"flex",alignItems:"center",gap:12,padding:"8px 12px",borderRadius:10,border:`2px solid ${sel?C.blue:C.border}`,background:sel?"#EFF6FF":C.bg,cursor:"pointer",transition:"all 0.15s"}}>
+                <div style={{width:16,height:16,borderRadius:4,border:`2px solid ${sel?C.blue:C.border}`,background:sel?C.blue:"#fff",display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0}}>
+                  {sel&&<div style={{width:8,height:8,borderRadius:2,background:"#fff"}}/>}
+                </div>
+                <div style={{flex:1}}>
+                  <div style={{fontSize:11,fontWeight:700,color:sel?C.blue:C.navy}}>Semaine {fmtDate(s.week_start)} → {fmtDate(s.week_end)}</div>
+                  <div style={{fontSize:9,color:C.textLight}}>{fmt(s.all_views)} vues · {s.all_purchases} achats · Google {euro(s.google_spend)} · Meta {euro(s.meta_spend)}</div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {/* YTD option — mutually exclusive with weeks */}
+      {ytdSnap&&(
+        <div onClick={selectYTD}
+          style={{display:"flex",alignItems:"center",gap:12,padding:"8px 12px",borderRadius:10,border:`2px solid ${isYTDSelected?C.navy:C.border}`,background:isYTDSelected?"#1B2A4A":"#F8FAFC",cursor:"pointer",marginBottom:12}}>
+          <div style={{width:16,height:16,borderRadius:4,border:`2px solid ${isYTDSelected?"#fff":C.border}`,background:isYTDSelected?"#fff":"#fff",display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0}}>
+            {isYTDSelected&&<div style={{width:8,height:8,borderRadius:2,background:C.navy}}/>}
+          </div>
+          <div>
+            <div style={{fontSize:11,fontWeight:700,color:isYTDSelected?"#fff":C.navy}}>YTD — {fmtDate(ytdSnap.week_start)} → {fmtDate(ytdSnap.week_end)}</div>
+            <div style={{fontSize:9,color:isYTDSelected?"#94A3B8":C.textLight}}>{fmt(ytdSnap.all_views)} vues · {ytdSnap.all_purchases} achats · Google {euro(ytdSnap.google_spend)} · Meta {euro(ytdSnap.meta_spend)}</div>
+          </div>
+        </div>
+      )}
+
+      {/* Gap error */}
+      {gapError&&<div style={{background:"#FEF2F2",border:`1px solid ${C.red}40`,borderRadius:8,padding:"8px 12px",fontSize:11,color:C.red,fontWeight:500,marginBottom:10}}>{gapError}</div>}
+
+      {/* CTA */}
+      {canAnalyse&&(
+        <button onClick={onAnalyse}
+          style={{fontSize:12,fontWeight:700,padding:"9px 22px",borderRadius:8,border:"none",cursor:"pointer",background:C.blue,color:"#fff"}}>
+          Analyser {isYTDSelected?"YTD":`${count} semaine${count>1?"s":""}`} →
+        </button>
+      )}
+    </div>
+  );
+}
+
 /* ───────── MAIN ───────── */
 export default function Dashboard(){
   const[ga4,setGa4]=useState(null);const[gAds,setGAds]=useState(null);const[meta,setMeta]=useState(null);
@@ -236,6 +417,12 @@ export default function Dashboard(){
   const[history,setHistory]=useState([]);const[histLoading,setHistLoading]=useState(true);
   const[saveStatus,setSaveStatus]=useState(null);const[saveMsg,setSaveMsg]=useState("");
   const[gapWarn,setGapWarn]=useState(null);const[dateAnom,setDateAnom]=useState([]);
+  const[pdfLoading,setPdfLoading]=useState(false);
+  const pdfRef=useRef(null);
+  const[selectedSnaps,setSelectedSnaps]=useState(new Set());
+  const[histMode,setHistMode]=useState(false); // true = analyse depuis la base
+  const[histAnalysis,setHistAnalysis]=useState(null); // analysis from base
+  const[histPeriodLabel,setHistPeriodLabel]=useState("");
 
   useEffect(()=>{loadHistory().then(r=>setHistory(r||[])).catch(console.error).finally(()=>setHistLoading(false));},[]);
 
@@ -273,13 +460,34 @@ export default function Dashboard(){
     setTimeout(()=>{setSaveStatus(null);setSaveMsg("");},5000);
   },[ga4,gAds,meta,isYTD]);
 
+
+  const handleHistAnalyse=useCallback(()=>{
+    const snaps=[...history].filter(h=>selectedSnaps.has(h.id));
+    if(snaps.length===0)return;
+    const{products,totals,googleSpend,metaSpend}=aggregateSnapshots(snaps);
+    // Build period label
+    const sorted=snaps.sort((a,b)=>a.week_start.localeCompare(b.week_start));
+    const label=snaps.length===1&&snaps[0].is_ytd
+      ? `YTD ${fmtDate(snaps[0].week_start)}→${fmtDate(snaps[0].week_end)}`
+      : `${fmtDate(sorted[0].week_start)} → ${fmtDate(sorted[sorted.length-1].week_end)} (${snaps.length} semaine${snaps.length>1?"s":""})`;
+    setHistPeriodLabel(label);
+    // Build fake ga4-like structure for analysis useMemo
+    setHistAnalysis({products,totals,googleSpend,metaSpend});
+    setHistMode(true);
+  },[history,selectedSnaps]);
+
   const analysis=useMemo(()=>{
-    if(!ga4)return null;
-    const t=ga4.totals;
-    const getCost=id=>((gAds?.costs?.[id]||0)+(meta?.costs?.[id]||0));
+    // Source: either live import (ga4) or history selection (histAnalysis)
+    const src=histMode&&histAnalysis?histAnalysis:ga4?{products:ga4.products,totals:ga4.totals,googleSpend:gAds?.total||0,metaSpend:meta?.total||0}:null;
+    if(!src)return null;
+    const t=src.totals;
+    const getCost=id=>{
+      if(histMode&&histAnalysis)return 0; // no per-product cost in hist mode
+      return(gAds?.costs?.[id]||0)+(meta?.costs?.[id]||0);
+    };
 
     // ORGANIC
-    const orgAll=ga4.products.filter(r=>(r.orgViews||0)>0)
+    const orgAll=src.products.filter(r=>(r.orgViews||0)>0)
       .map(r=>({itemId:r.itemId,name:r.name,views:r.orgViews||0,atc:r.orgAtc||0,purchases:r.orgPurch||0,cost:getCost(r.itemId),totalPurch:(r.allPurch||0)+(r.orgPurch||0)+(r.paidPurch||0)}))
       .sort((a,b)=>b.views-a.views);
     const orgTop20=orgAll.slice(0,20);
@@ -288,7 +496,7 @@ export default function Dashboard(){
     const orgZeroConv=orgAll.filter(p=>p.views>=50&&p.totalPurch===0&&!orgTop20Ids.has(p.itemId)).slice(0,15);
 
     // PAID
-    const paidAll=ga4.products.filter(r=>(r.paidViews||0)>0)
+    const paidAll=src.products.filter(r=>(r.paidViews||0)>0)
       .map(r=>({itemId:r.itemId,name:r.name,views:r.paidViews||0,atc:r.paidAtc||0,purchases:r.paidPurch||0,cost:getCost(r.itemId),totalPurch:(r.allPurch||0)+(r.orgPurch||0)+(r.paidPurch||0)}))
       .sort((a,b)=>b.views-a.views);
     const paidTop20=paidAll.slice(0,20);
@@ -297,19 +505,19 @@ export default function Dashboard(){
     const paidZeroConv=paidAll.filter(p=>p.views>=50&&p.totalPurch===0&&!paidTop20Ids.has(p.itemId)).slice(0,15);
 
     // WASTEFUL: spend > 20€, 0 achat toutes sources
-    const wasteful=ga4.products.map(r=>({itemId:r.itemId,name:r.name,views:r.paidViews||0,atc:r.paidAtc||0,purchases:(r.allPurch||0)+(r.orgPurch||0)+(r.paidPurch||0),cost:getCost(r.itemId)})).filter(p=>p.cost>20&&p.purchases===0).sort((a,b)=>b.cost-a.cost).slice(0,10);
+    const wasteful=src.products.map(r=>({itemId:r.itemId,name:r.name,views:r.paidViews||0,atc:r.paidAtc||0,purchases:(r.allPurch||0)+(r.orgPurch||0)+(r.paidPurch||0),cost:getCost(r.itemId)})).filter(p=>p.cost>20&&p.purchases===0).sort((a,b)=>b.cost-a.cost).slice(0,10);
 
     return{
       allViews:t.allViews,allAtcRate:t.allViews>0?t.allAtc/t.allViews:0,allConvRate:t.allViews>0?t.allPurch/t.allViews:0,allPurch:t.allPurch,
       orgViews:t.orgViews,orgAtcRate:t.orgViews>0?t.orgAtc/t.orgViews:0,orgConvRate:t.orgViews>0?t.orgPurch/t.orgViews:0,orgPurch:t.orgPurch,orgShare:t.allViews>0?t.orgViews/t.allViews:0,
       paidViews:t.paidViews,paidAtcRate:t.paidViews>0?t.paidAtc/t.paidViews:0,paidConvRate:t.paidViews>0?t.paidPurch/t.paidViews:0,paidPurch:t.paidPurch,paidShare:t.allViews>0?t.paidViews/t.allViews:0,
-      totalGCost:gAds?.total||0,totalMCost:meta?.total||0,
+      totalGCost:histMode&&histAnalysis?histAnalysis.googleSpend:(gAds?.total||0),totalMCost:histMode&&histAnalysis?histAnalysis.metaSpend:(meta?.total||0),
       orgTop20,orgBestConv,orgZeroConv,
       paidTop20,paidBestConv,paidZeroConv,wasteful,
     };
-  },[ga4,gAds,meta]);
+  },[ga4,gAds,meta,histMode,histAnalysis]);
 
-  const hasCosts=gAds||meta;
+  const hasCosts=histMode?(histAnalysis&&(histAnalysis.googleSpend>0||histAnalysis.metaSpend>0)):(gAds||meta);
   const weeklyHist=useMemo(()=>history.filter(h=>!h.is_ytd).sort((a,b)=>a.week_start.localeCompare(b.week_start)),[history]);
   const ytdSnap=useMemo(()=>history.find(h=>h.is_ytd),[history]);
 
@@ -320,35 +528,49 @@ export default function Dashboard(){
       <div style={{background:C.navy,padding:"16px 28px",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
         <div>
           <div style={{fontSize:17,fontWeight:700,color:"#FFF"}}>Dashboard E-commerce · BestMobilier</div>
+          <div style={{fontSize:11,color:"#94A3B8",marginTop:2,display:"flex",gap:8}}>
+            <button onClick={()=>{setHistMode(false);setHistAnalysis(null);}} style={{fontSize:10,padding:"3px 10px",borderRadius:20,border:"none",cursor:"pointer",fontWeight:600,background:!histMode?"#3266AD":"transparent",color:!histMode?"#fff":"#94A3B8"}}>Import</button>
+            <button onClick={()=>setHistMode(true)} style={{fontSize:10,padding:"3px 10px",borderRadius:20,border:"none",cursor:"pointer",fontWeight:600,background:histMode?"#3266AD":"transparent",color:histMode?"#fff":"#94A3B8"}}>Analyser base</button>
+          </div>
           <div style={{fontSize:11,color:"#94A3B8",marginTop:2}}>{weeklyHist.length} semaine(s) en base{ytdSnap?` · YTD ${fmtDate(ytdSnap.week_start)}→${fmtDate(ytdSnap.week_end)}`:""}</div>
         </div>
-        {ga4&&(
+        {(ga4||histAnalysis)&&(
           <div style={{display:"flex",alignItems:"center",gap:10}}>
-            <label style={{fontSize:11,color:"#94A3B8",display:"flex",alignItems:"center",gap:6,cursor:"pointer"}}>
+            {!histMode&&<label style={{fontSize:11,color:"#94A3B8",display:"flex",alignItems:"center",gap:6,cursor:"pointer"}}>
               <input type="checkbox" checked={isYTD} onChange={e=>setIsYTD(e.target.checked)}/>Import YTD
-            </label>
-            <button onClick={handleSave} disabled={saveStatus==="saving"} style={{fontSize:12,fontWeight:700,padding:"8px 18px",borderRadius:8,border:"none",cursor:"pointer",background:saveStatus==="ok"?C.teal:C.blue,color:"#fff"}}>
+            </label>}
+            {!histMode&&<button onClick={handleSave} disabled={saveStatus==="saving"} style={{fontSize:12,fontWeight:700,padding:"8px 18px",borderRadius:8,border:"none",cursor:"pointer",background:saveStatus==="ok"?C.teal:C.blue,color:"#fff"}}>
               {saveStatus==="saving"?"Sauvegarde...":saveStatus==="ok"?"✅ Sauvegardé":"💾 Sauvegarder"}
+            </button>}
+            <button onClick={async()=>{setPdfLoading(true);try{await exportPDF(histMode?histPeriodLabel:`${isYTD?"YTD":"Semaine"} ${fmtDate(ga4?.dateRange?.start)}→${fmtDate(ga4?.dateRange?.end)}`,pdfRef);}finally{setPdfLoading(false);}}} disabled={pdfLoading}
+              style={{fontSize:12,fontWeight:700,padding:"8px 18px",borderRadius:8,border:"none",cursor:"pointer",background:C.purple,color:"#fff"}}>
+              {pdfLoading?"Génération...":"📄 Export PDF"}
             </button>
           </div>
         )}
       </div>
 
       <div style={{maxWidth:1140,margin:"0 auto",padding:"18px 16px 60px"}}>
+        {/* PDF content area */}
+        <div ref={pdfRef}>
 
-        {/* Drop zones */}
-        <div style={{display:"flex",gap:12,marginBottom:14}}>
+        {/* Drop zones — hidden in histMode */}
+        {!histMode&&<div style={{display:"flex",gap:12,marginBottom:14}}>
           <DropZone label="GA4" hint="Export combiné Organic + Paid + All Users (.csv)" icon="📊" loaded={!!ga4} fileName={ga4File} dateRange={ga4?.dateRange} onFiles={handleGA4} accept=".csv" color={C.blue}/>
           <DropZone label="Google Ads" hint="Coûts par produit (.csv UTF-16 TSV)" icon="🎯" loaded={!!gAds} fileName={gAdsFile} dateRange={gAds?.dateRange} onFiles={handleGoogleAds} accept=".csv" color={C.orange}/>
           <DropZone label="Meta Ads" hint="Coûts par produit ID (.csv)" icon="📘" loaded={!!meta} fileName={metaFile} dateRange={meta?.dateRange} onFiles={handleMeta} accept=".csv" color={C.purple}/>
-        </div>
+        </div>}
 
         {/* Alerts */}
-        {dateAnom.map((a,i)=><Alert key={i} type="error">{a}</Alert>)}
-        {gapWarn&&<Alert type="warn">{gapWarn}</Alert>}
+        {!histMode&&dateAnom.map((a,i)=><Alert key={i} type="error">{a}</Alert>)}
+        {!histMode&&gapWarn&&<Alert type="warn">{gapWarn}</Alert>}
         {saveMsg&&<Alert type={saveStatus==="error"?"error":"ok"}>{saveMsg}</Alert>}
 
-        {!ga4&&(
+        {histMode&&!histLoading&&(weeklyHist.length>0||ytdSnap)&&(
+          <HistorySelector weeklyHist={weeklyHist} ytdSnap={ytdSnap} selectedSnaps={selectedSnaps} setSelectedSnaps={setSelectedSnaps} onAnalyse={handleHistAnalyse}/>
+        )}
+
+        {!histMode&&!ga4&&(
           <div style={{textAlign:"center",padding:"60px 20px",color:C.textLight}}>
             <div style={{fontSize:48,marginBottom:12}}>📊</div>
             <div style={{fontSize:15,fontWeight:500}}>Glisse ton export GA4 pour commencer</div>
@@ -360,9 +582,9 @@ export default function Dashboard(){
 
           {/* Period + KPIs globaux */}
           <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}>
-            <div style={{fontSize:13,fontWeight:700,color:C.navy}}>{isYTD?"📅 YTD":"📅 Semaine"} · {fmtDate(ga4.dateRange?.start)} → {fmtDate(ga4.dateRange?.end)}</div>
+            <div style={{fontSize:13,fontWeight:700,color:C.navy}}>{histMode?`📂 ${histPeriodLabel}`:`${isYTD?"📅 YTD":"📅 Semaine"} · ${fmtDate(ga4?.dateRange?.start)} → ${fmtDate(ga4?.dateRange?.end)}`}</div>
           </div>
-          <div style={{display:"flex",gap:10,flexWrap:"wrap",marginBottom:20}}>
+          <div data-pdf-section style={{display:"flex",gap:10,flexWrap:"wrap",marginBottom:20}}>
             <KpiCard label="Vues (All)" value={fmt(analysis.allViews)} borderColor={C.navy}/>
             <KpiCard label="ATC global" value={pct(analysis.allAtcRate)} borderColor={C.navy}/>
             <KpiCard label="Conv. globale" value={pct(analysis.allConvRate)} borderColor={C.navy}/>
@@ -374,7 +596,7 @@ export default function Dashboard(){
           </div>
 
           {/* ══ BLOC SEO ══ */}
-          <div style={{background:C.card,borderRadius:14,padding:20,boxShadow:"0 1px 4px rgba(0,0,0,0.07)",marginBottom:20,borderTop:`4px solid ${C.teal}`}}>
+          <div data-pdf-section style={{background:C.card,borderRadius:14,padding:20,boxShadow:"0 1px 4px rgba(0,0,0,0.07)",marginBottom:20,borderTop:`4px solid ${C.teal}`}}>
             <div style={{borderLeft:`4px solid ${C.teal}`,paddingLeft:12,marginBottom:16}}>
               <div style={{fontSize:14,fontWeight:700,color:C.teal}}>🌿 SEO — Trafic Organique</div>
               <div style={{fontSize:10,color:C.textLight,marginTop:2}}>{fmt(analysis.orgViews)} vues · ATC {pct(analysis.orgAtcRate)} · Conv. {pct(analysis.orgConvRate)} · {analysis.orgPurch} achats</div>
@@ -391,7 +613,7 @@ export default function Dashboard(){
           </div>
 
           {/* ══ BLOC PAID ══ */}
-          <div style={{background:C.card,borderRadius:14,padding:20,boxShadow:"0 1px 4px rgba(0,0,0,0.07)",marginBottom:20,borderTop:`4px solid ${C.orange}`}}>
+          <div data-pdf-section style={{background:C.card,borderRadius:14,padding:20,boxShadow:"0 1px 4px rgba(0,0,0,0.07)",marginBottom:20,borderTop:`4px solid ${C.orange}`}}>
             <div style={{borderLeft:`4px solid ${C.orange}`,paddingLeft:12,marginBottom:16}}>
               <div style={{fontSize:14,fontWeight:700,color:C.orange}}>🎯 Paid — Trafic Publicitaire</div>
               <div style={{fontSize:10,color:C.textLight,marginTop:2}}>{fmt(analysis.paidViews)} vues · ATC {pct(analysis.paidAtcRate)} · Conv. {pct(analysis.paidConvRate)} · {analysis.paidPurch} achats</div>
@@ -412,6 +634,8 @@ export default function Dashboard(){
           </div>
 
         </>)}
+
+        </div>{/* end pdfRef */}
 
         {/* Historique */}
         {!histLoading&&weeklyHist.length>0&&<HistoryChart history={weeklyHist}/>}
