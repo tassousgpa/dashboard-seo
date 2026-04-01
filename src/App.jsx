@@ -82,7 +82,7 @@ function parseGoogleAds(text){
   const lines=text.split("\n").map(l=>l.replace(/\r$/,""));
   const dateRange=parseDateEnglish(lines[1]||"");
   const costs={};
-  for(const line of lines){const p=line.split("\t");if(p.length>=3){const id=normalizeId(p[0]);const cost=parseFloat(p[2]);if(id&&!isNaN(cost)&&cost>0&&id!=="Item_ID"&&id!=="Item ID")costs[id]=(costs[id]||0)+cost;}}
+  for(const line of lines){const p=line.split("\t").map(x=>x.trim());if(p.length>=3){const id=normalizeId(p[0]);const cost=parseFloat(p[2].replace(",","."));if(id&&!isNaN(cost)&&cost>0&&id!=="Item_ID"&&id!=="Item ID")costs[id]=(costs[id]||0)+cost;}}
   return{costs,dateRange,total:Object.values(costs).reduce((s,v)=>s+v,0)};
 }
 
@@ -102,7 +102,7 @@ function parseMeta(text){
     const f=parseRow(lines[i]);if(f.length<2)continue;
     const rawId=f[idCol>=0?idCol:0]||"";const idMatch=rawId.match(/^(\d+[-_]\d+)/);if(!idMatch)continue;
     const itemId=normalizeId(idMatch[1]);
-    const cost=parseFloat((f[costCol>=0?costCol:1]||"").replace(",","."));
+    const costStr=(f[costCol>=0?costCol:1]||"").trim().replace(/\s/g,"").replace(",",".");const cost=parseFloat(costStr);
     if(!isNaN(cost)&&cost>0)costs[itemId]=(costs[itemId]||0)+cost;
     if(!dateRange&&startCol>=0&&endCol>=0){const s=f[startCol]?.trim(),e=f[endCol]?.trim();if(s&&s.match(/^\d{4}-\d{2}-\d{2}/))dateRange={start:s,end:e};}
   }
@@ -439,9 +439,23 @@ export default function Dashboard(){
   },[]);
 
   const handleMeta=useCallback(files=>{
-    const file=files[0],r=new FileReader();
-    r.onload=e=>{const res=parseMeta(e.target.result);setMeta(res);setMetaFile(file.name);};
-    r.readAsText(file,"utf-8");
+    const file=files[0];
+    // Try latin1 first (weekly export), fallback utf-8 (YTD export with BOM)
+    const tryParse=(text)=>{
+      const res=parseMeta(text);
+      // Validate: if total>0 we got real data
+      if(res.total>0){setMeta(res);setMetaFile(file.name);return true;}
+      return false;
+    };
+    const r=new FileReader();
+    r.onload=e=>{
+      if(!tryParse(e.target.result)){
+        const r2=new FileReader();
+        r2.onload=e2=>{tryParse(e2.target.result)||(setMeta({costs:{},dateRange:null,total:0}),setMetaFile(file.name));};
+        r2.readAsText(file,"utf-8");
+      }
+    };
+    r.readAsText(file,"latin1");
   },[]);
 
   useEffect(()=>{
@@ -521,6 +535,69 @@ export default function Dashboard(){
   const weeklyHist=useMemo(()=>history.filter(h=>!h.is_ytd).sort((a,b)=>a.week_start.localeCompare(b.week_start)),[history]);
   const ytdSnap=useMemo(()=>history.find(h=>h.is_ytd),[history]);
 
+  // Home screen: show when no data loaded and not in histMode
+  const showHome = !ga4 && !histMode && !histAnalysis;
+
+  if(showHome){
+    return(
+      <div style={{fontFamily:"-apple-system,'Segoe UI',sans-serif",background:C.navy,minHeight:"100vh",display:"flex",flexDirection:"column"}}>
+        {/* Logo bar */}
+        <div style={{padding:"24px 36px"}}>
+          <div style={{fontSize:18,fontWeight:700,color:"#fff"}}>BestMobilier</div>
+          <div style={{fontSize:11,color:"#94A3B8",marginTop:2}}>Dashboard E-commerce</div>
+        </div>
+
+        {/* Split hero */}
+        <div style={{flex:1,display:"flex",gap:0,padding:"0 36px 48px"}}>
+          {/* Left: Import */}
+          <div onClick={()=>setHistMode(false)}
+            style={{flex:1,background:"#243556",borderRadius:"16px 0 0 16px",padding:"48px 40px",cursor:"pointer",transition:"background 0.2s",display:"flex",flexDirection:"column",justifyContent:"space-between",borderRight:"1px solid rgba(255,255,255,0.08)"}}
+            onMouseEnter={e=>e.currentTarget.style.background="#2d4268"}
+            onMouseLeave={e=>e.currentTarget.style.background="#243556"}>
+            <div>
+              <div style={{fontSize:48,marginBottom:20}}>📥</div>
+              <div style={{fontSize:22,fontWeight:700,color:"#fff",marginBottom:12}}>Importer des données</div>
+              <div style={{fontSize:13,color:"#94A3B8",lineHeight:1.6}}>
+                Glisse tes exports GA4, Google Ads et Meta Ads pour analyser une nouvelle semaine ou initialiser le YTD.
+              </div>
+            </div>
+            <div style={{marginTop:32}}>
+              <div style={{display:"inline-flex",alignItems:"center",gap:8,background:C.blue,color:"#fff",padding:"12px 24px",borderRadius:10,fontSize:13,fontWeight:700}}>
+                Importer une période →
+              </div>
+            </div>
+          </div>
+
+          {/* Right: Visualise base */}
+          <div onClick={()=>{if(weeklyHist.length>0||ytdSnap){setHistMode(true);}}}
+            style={{flex:1,background:weeklyHist.length===0&&!ytdSnap?"#1e2d46":"#243556",borderRadius:"0 16px 16px 0",padding:"48px 40px",cursor:weeklyHist.length===0&&!ytdSnap?"not-allowed":"pointer",transition:"background 0.2s",display:"flex",flexDirection:"column",justifyContent:"space-between",opacity:weeklyHist.length===0&&!ytdSnap?0.5:1}}
+            onMouseEnter={e=>{if(weeklyHist.length>0||ytdSnap)e.currentTarget.style.background="#2d4268";}}
+            onMouseLeave={e=>e.currentTarget.style.background="#243556"}>
+            <div>
+              <div style={{fontSize:48,marginBottom:20}}>📊</div>
+              <div style={{fontSize:22,fontWeight:700,color:"#fff",marginBottom:12}}>Visualiser l'historique</div>
+              <div style={{fontSize:13,color:"#94A3B8",lineHeight:1.6}}>
+                {weeklyHist.length===0&&!ytdSnap
+                  ? "Aucune donnée en base. Commence par importer une première période."
+                  : `${weeklyHist.length} semaine${weeklyHist.length>1?"s":""} en base${ytdSnap?" · YTD disponible":""} — sélectionne une période pour afficher les analyses.`
+                }
+              </div>
+            </div>
+            {(weeklyHist.length>0||ytdSnap)&&(
+              <div style={{marginTop:32}}>
+                <div style={{display:"inline-flex",alignItems:"center",gap:8,background:C.teal,color:"#fff",padding:"12px 24px",borderRadius:10,fontSize:13,fontWeight:700}}>
+                  Analyser la base →
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+
+        {histLoading&&<div style={{textAlign:"center",padding:20,color:"#94A3B8",fontSize:12}}>Chargement de l'historique…</div>}
+      </div>
+    );
+  }
+
   return(
     <div style={{fontFamily:"-apple-system,'Segoe UI',sans-serif",background:C.bg,minHeight:"100vh"}}>
 
@@ -528,7 +605,8 @@ export default function Dashboard(){
       <div style={{background:C.navy,padding:"16px 28px",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
         <div>
           <div style={{fontSize:17,fontWeight:700,color:"#FFF"}}>Dashboard E-commerce · BestMobilier</div>
-          <div style={{fontSize:11,color:"#94A3B8",marginTop:2,display:"flex",gap:8}}>
+          <div style={{fontSize:11,color:"#94A3B8",marginTop:2,display:"flex",gap:8,alignItems:"center"}}>
+            <button onClick={()=>{setGa4(null);setGAds(null);setMeta(null);setHistMode(false);setHistAnalysis(null);setSelectedSnaps(new Set());}} style={{fontSize:10,padding:"3px 10px",borderRadius:20,border:"1px solid #94A3B8",cursor:"pointer",fontWeight:600,background:"transparent",color:"#94A3B8"}}>← Accueil</button>
             <button onClick={()=>{setHistMode(false);setHistAnalysis(null);}} style={{fontSize:10,padding:"3px 10px",borderRadius:20,border:"none",cursor:"pointer",fontWeight:600,background:!histMode?"#3266AD":"transparent",color:!histMode?"#fff":"#94A3B8"}}>Import</button>
             <button onClick={()=>setHistMode(true)} style={{fontSize:10,padding:"3px 10px",borderRadius:20,border:"none",cursor:"pointer",fontWeight:600,background:histMode?"#3266AD":"transparent",color:histMode?"#fff":"#94A3B8"}}>Analyser base</button>
           </div>
