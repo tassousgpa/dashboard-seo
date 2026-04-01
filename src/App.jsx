@@ -300,11 +300,12 @@ function aggregateSnapshots(snaps){
     for(const r of rows){
       const id=r.itemId||r.item_id||"";
       if(!id)continue;
-      if(!map[id])map[id]={itemId:id,name:r.name||"",allViews:0,allAtc:0,allPurch:0,paidViews:0,paidAtc:0,paidPurch:0,orgViews:0,orgAtc:0,orgPurch:0};
+      if(!map[id])map[id]={itemId:id,name:r.name||"",allViews:0,allAtc:0,allPurch:0,paidViews:0,paidAtc:0,paidPurch:0,orgViews:0,orgAtc:0,orgPurch:0,cost:0};
       const e=map[id];
       e.allViews+=r.allViews||0; e.allAtc+=r.allAtc||0; e.allPurch+=r.allPurch||0;
       e.paidViews+=r.paidViews||0; e.paidAtc+=r.paidAtc||0; e.paidPurch+=r.paidPurch||0;
       e.orgViews+=r.orgViews||0; e.orgAtc+=r.orgAtc||0; e.orgPurch+=r.orgPurch||0;
+      e.cost+=r.cost||0;
     }
   }
   const products=Object.values(map);
@@ -467,7 +468,7 @@ export default function Dashboard(){
     if(!ga4)return;setSaveStatus("saving");
     try{
       const t=ga4.totals;
-      await upsertSnapshot({week_start:ga4.dateRange.start,week_end:ga4.dateRange.end,is_ytd:isYTD,source:isYTD?"ytd_seed":"manual",all_views:t.allViews,all_atc:t.allAtc,all_purchases:t.allPurch,paid_views:t.paidViews,paid_atc:t.paidAtc,paid_purchases:t.paidPurch,org_views:t.orgViews,org_atc:t.orgAtc,org_purchases:t.orgPurch,google_spend:Math.round((gAds?.total||0)*100)/100,meta_spend:Math.round((meta?.total||0)*100)/100,product_rows:ga4.products});
+      await upsertSnapshot({week_start:ga4.dateRange.start,week_end:ga4.dateRange.end,is_ytd:isYTD,source:isYTD?"ytd_seed":"manual",all_views:t.allViews,all_atc:t.allAtc,all_purchases:t.allPurch,paid_views:t.paidViews,paid_atc:t.paidAtc,paid_purchases:t.paidPurch,org_views:t.orgViews,org_atc:t.orgAtc,org_purchases:t.orgPurch,google_spend:Math.round((gAds?.total||0)*100)/100,meta_spend:Math.round((meta?.total||0)*100)/100,product_rows:ga4.products.map(r=>({...r,cost:Math.round(((gAds?.costs?.[r.itemId]||0)+(meta?.costs?.[r.itemId]||0))*100)/100}))});
       const upd=await loadHistory();setHistory(upd||[]);
       setSaveStatus("ok");setSaveMsg(`✅ ${isYTD?"YTD":"Semaine"} ${fmtDate(ga4.dateRange.start)}→${fmtDate(ga4.dateRange.end)} sauvegardée`);
     }catch(e){setSaveStatus("error");setSaveMsg("❌ "+e.message);}
@@ -495,8 +496,13 @@ export default function Dashboard(){
     const src=histMode&&histAnalysis?histAnalysis:ga4?{products:ga4.products,totals:ga4.totals,googleSpend:gAds?.total||0,metaSpend:meta?.total||0}:null;
     if(!src)return null;
     const t=src.totals;
+    // Build cost lookup: in histMode use stored cost from product_rows, otherwise live files
+    const costMap={};
+    if(histMode&&histAnalysis){
+      histAnalysis.products.forEach(r=>{if(r.cost>0)costMap[r.itemId]=r.cost;});
+    }
     const getCost=id=>{
-      if(histMode&&histAnalysis)return 0; // no per-product cost in hist mode
+      if(histMode&&histAnalysis)return costMap[id]||0;
       return(gAds?.costs?.[id]||0)+(meta?.costs?.[id]||0);
     };
 
