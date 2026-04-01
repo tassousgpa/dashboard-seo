@@ -422,6 +422,7 @@ export default function Dashboard(){
   const pdfRef=useRef(null);
   const[selectedSnaps,setSelectedSnaps]=useState(new Set());
   const[histMode,setHistMode]=useState(false); // true = analyse depuis la base
+  const[importMode,setImportMode]=useState(false); // true = user clicked "Importer"
   const[histAnalysis,setHistAnalysis]=useState(null); // analysis from base
   const[histPeriodLabel,setHistPeriodLabel]=useState("");
 
@@ -542,7 +543,7 @@ export default function Dashboard(){
   const ytdSnap=useMemo(()=>history.find(h=>h.is_ytd),[history]);
 
   // Home screen: show when no data loaded and not in histMode
-  const showHome = !ga4 && !histMode && !histAnalysis;
+  const showHome = !ga4 && !histMode && !histAnalysis && !importMode;
 
   if(showHome){
     return(
@@ -556,7 +557,7 @@ export default function Dashboard(){
         {/* Split hero */}
         <div style={{flex:1,display:"flex",gap:0,padding:"0 36px 48px"}}>
           {/* Left: Import */}
-          <div onClick={()=>setHistMode(false)}
+          <div onClick={()=>setImportMode(true)}
             style={{flex:1,background:"#243556",borderRadius:"16px 0 0 16px",padding:"48px 40px",cursor:"pointer",transition:"background 0.2s",display:"flex",flexDirection:"column",justifyContent:"space-between",borderRight:"1px solid rgba(255,255,255,0.08)"}}
             onMouseEnter={e=>e.currentTarget.style.background="#2d4268"}
             onMouseLeave={e=>e.currentTarget.style.background="#243556"}>
@@ -612,7 +613,7 @@ export default function Dashboard(){
         <div>
           <div style={{fontSize:17,fontWeight:700,color:"#FFF"}}>Dashboard E-commerce · BestMobilier</div>
           <div style={{fontSize:11,color:"#94A3B8",marginTop:2,display:"flex",gap:8,alignItems:"center"}}>
-            <button onClick={()=>{setGa4(null);setGAds(null);setMeta(null);setHistMode(false);setHistAnalysis(null);setSelectedSnaps(new Set());}} style={{fontSize:10,padding:"3px 10px",borderRadius:20,border:"1px solid #94A3B8",cursor:"pointer",fontWeight:600,background:"transparent",color:"#94A3B8"}}>← Accueil</button>
+            <button onClick={()=>{setGa4(null);setGAds(null);setMeta(null);setHistMode(false);setHistAnalysis(null);setSelectedSnaps(new Set());setImportMode(false);}} style={{fontSize:10,padding:"3px 10px",borderRadius:20,border:"1px solid #94A3B8",cursor:"pointer",fontWeight:600,background:"transparent",color:"#94A3B8"}}>← Accueil</button>
             <button onClick={()=>{setHistMode(false);setHistAnalysis(null);}} style={{fontSize:10,padding:"3px 10px",borderRadius:20,border:"none",cursor:"pointer",fontWeight:600,background:!histMode?"#3266AD":"transparent",color:!histMode?"#fff":"#94A3B8"}}>Import</button>
             <button onClick={()=>setHistMode(true)} style={{fontSize:10,padding:"3px 10px",borderRadius:20,border:"none",cursor:"pointer",fontWeight:600,background:histMode?"#3266AD":"transparent",color:histMode?"#fff":"#94A3B8"}}>Analyser base</button>
           </div>
