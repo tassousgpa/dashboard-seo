@@ -139,52 +139,54 @@ async function loadScript(src){
 
 async function exportPDF(periodLabel,pdfRef){
   if(!pdfRef.current)return;
-  // Load libs
   await loadScript("https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js");
   await loadScript("https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js");
   const{jsPDF}=window.jspdf;
 
-  const A4_W=210,A4_H=297,MARGIN=12;
+  const A4_W=210,A4_H=297,MARGIN=12,MINI_H=14;
   const contentW=A4_W-MARGIN*2;
   const pdf=new jsPDF({orientation:"portrait",unit:"mm",format:"a4"});
 
-  // Cover header
-  pdf.setFillColor(27,42,74);
-  pdf.rect(0,0,210,28,"F");
-  pdf.setTextColor(255,255,255);
-  pdf.setFontSize(14);pdf.setFont("helvetica","bold");
-  pdf.text("Dashboard E-commerce · BestMobilier",MARGIN,12);
-  pdf.setFontSize(9);pdf.setFont("helvetica","normal");
-  pdf.text(periodLabel,MARGIN,20);
-  pdf.setTextColor(0,0,0);
+  const addMiniHeader=(first)=>{
+    pdf.setFillColor(27,42,74);
+    pdf.rect(0,0,210,first?28:MINI_H,"F");
+    pdf.setTextColor(255,255,255);
+    if(first){
+      pdf.setFontSize(14);pdf.setFont("helvetica","bold");
+      pdf.text("Dashboard E-commerce · BestMobilier",MARGIN,12);
+      pdf.setFontSize(9);pdf.setFont("helvetica","normal");
+      pdf.text(periodLabel,MARGIN,20);
+    } else {
+      pdf.setFontSize(7);pdf.setFont("helvetica","normal");
+      pdf.text(`BestMobilier · ${periodLabel}`,MARGIN,9);
+    }
+    pdf.setTextColor(0,0,0);
+  };
 
-  let curY=34;
+  addMiniHeader(true);
+  let curY=32;
+  let firstPage=true;
 
-  // Get all pdf sections
-  const sections=pdfRef.current.querySelectorAll("[data-pdf-section]");
+  // Collect all granular pdf elements (data-pdf-block = fine-grained, data-pdf-section = coarse fallback)
+  const els=Array.from(pdfRef.current.querySelectorAll("[data-pdf-block],[data-pdf-section]"));
 
-  for(const section of sections){
-    // canvas at 2x for sharpness
-    const canvas=await window.html2canvas(section,{scale:2,useCORS:true,backgroundColor:"#ffffff",logging:false});
+  for(const el of els){
+    // Skip data-pdf-section if it contains data-pdf-blocks (avoid double rendering)
+    if(el.hasAttribute("data-pdf-section")&&el.querySelector("[data-pdf-block]"))continue;
+
+    const canvas=await window.html2canvas(el,{scale:2,useCORS:true,backgroundColor:"#ffffff",logging:false});
     const imgW=contentW;
     const imgH=(canvas.height/canvas.width)*imgW;
 
-    // If section doesn't fit remaining space on page → new page
+    // If doesn't fit → new page
     if(curY+imgH>A4_H-MARGIN){
-      pdf.addPage();
-      // Repeat mini header on subsequent pages
-      pdf.setFillColor(27,42,74);
-      pdf.rect(0,0,210,12,"F");
-      pdf.setTextColor(255,255,255);
-      pdf.setFontSize(7);pdf.setFont("helvetica","normal");
-      pdf.text(`BestMobilier · ${periodLabel}`,MARGIN,8);
-      pdf.setTextColor(0,0,0);
-      curY=16;
+      pdf.addPage();firstPage=false;
+      addMiniHeader(false);
+      curY=MINI_H+4;
     }
 
-    const imgData=canvas.toDataURL("image/png");
-    pdf.addImage(imgData,"PNG",MARGIN,curY,imgW,imgH);
-    curY+=imgH+6;
+    pdf.addImage(canvas.toDataURL("image/png"),"PNG",MARGIN,curY,imgW,imgH);
+    curY+=imgH+5;
   }
 
   pdf.save(`BestMobilier_${periodLabel.replace(/[^a-zA-Z0-9]/g,"_")}.pdf`);
@@ -229,7 +231,7 @@ function Alert({type="warn",children}){
 function TableBlock({title,subtitle,titleColor,products,showCost=false}){
   if(!products||products.length===0)return null;
   return(
-    <div style={{marginBottom:18}}>
+    <div data-pdf-block style={{marginBottom:18}}>
       <div style={{fontSize:12,fontWeight:700,color:titleColor,marginBottom:3}}>{title}</div>
       {subtitle&&<div style={{fontSize:10,color:C.textLight,marginBottom:7}}>{subtitle}</div>}
       <div style={{overflowX:"auto"}}>
@@ -682,11 +684,11 @@ export default function Dashboard(){
 
           {/* ══ BLOC SEO ══ */}
           <div data-pdf-section style={{background:C.card,borderRadius:14,padding:20,boxShadow:"0 1px 4px rgba(0,0,0,0.07)",marginBottom:20,borderTop:`4px solid ${C.teal}`}}>
-            <div style={{borderLeft:`4px solid ${C.teal}`,paddingLeft:12,marginBottom:16}}>
+            <div data-pdf-block style={{borderLeft:`4px solid ${C.teal}`,paddingLeft:12,marginBottom:16}}>
               <div style={{fontSize:14,fontWeight:700,color:C.teal}}>🌿 SEO — Trafic Organique</div>
               <div style={{fontSize:10,color:C.textLight,marginTop:2}}>{fmt(analysis.orgViews)} vues · ATC {pct(analysis.orgAtcRate)} · Conv. {pct(analysis.orgConvRate)} · {analysis.orgPurch} achats</div>
             </div>
-            <div style={{display:"flex",gap:10,flexWrap:"wrap",marginBottom:18}}>
+            <div data-pdf-block style={{display:"flex",gap:10,flexWrap:"wrap",marginBottom:18}}>
               <KpiCard label="Vues organic" value={fmt(analysis.orgViews)} borderColor={C.teal}/>
               <KpiCard label="Taux ATC" value={pct(analysis.orgAtcRate)} borderColor={C.teal}/>
               <KpiCard label="Taux conv." value={pct(analysis.orgConvRate)} borderColor={C.teal}/>
@@ -699,11 +701,11 @@ export default function Dashboard(){
 
           {/* ══ BLOC PAID ══ */}
           <div data-pdf-section style={{background:C.card,borderRadius:14,padding:20,boxShadow:"0 1px 4px rgba(0,0,0,0.07)",marginBottom:20,borderTop:`4px solid ${C.orange}`}}>
-            <div style={{borderLeft:`4px solid ${C.orange}`,paddingLeft:12,marginBottom:16}}>
+            <div data-pdf-block style={{borderLeft:`4px solid ${C.orange}`,paddingLeft:12,marginBottom:16}}>
               <div style={{fontSize:14,fontWeight:700,color:C.orange}}>🎯 Paid — Trafic Publicitaire</div>
               <div style={{fontSize:10,color:C.textLight,marginTop:2}}>{fmt(analysis.paidViews)} vues · ATC {pct(analysis.paidAtcRate)} · Conv. {pct(analysis.paidConvRate)} · {analysis.paidPurch} achats</div>
             </div>
-            <div style={{display:"flex",gap:10,flexWrap:"wrap",marginBottom:18}}>
+            <div data-pdf-block style={{display:"flex",gap:10,flexWrap:"wrap",marginBottom:18}}>
               <KpiCard label="Vues paid" value={fmt(analysis.paidViews)} borderColor={C.orange}/>
               <KpiCard label="Taux ATC" value={pct(analysis.paidAtcRate)} borderColor={C.orange}/>
               <KpiCard label="Taux conv." value={pct(analysis.paidConvRate)} borderColor={C.orange}/>
