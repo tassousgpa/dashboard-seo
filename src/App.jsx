@@ -412,6 +412,40 @@ function HistorySelector({weeklyHist,ytdSnap,selectedSnaps,setSelectedSnaps,onAn
   );
 }
 
+
+/* ───────── ABANDON TABLE ───────── */
+function AbandonTable({products,showCost=false}){
+  if(!products||products.length===0)return null;
+  return(
+    <div style={{overflowX:"auto"}}>
+      <table style={{width:"100%",borderCollapse:"collapse",fontSize:11}}>
+        <thead>
+          <tr style={{borderBottom:`2px solid ${C.navy}`}}>
+            {["#","Produit","ATC","Achats","Abandons","Taux abandon",...(showCost?["Coût Ads"]:[])].map((h,i)=>(
+              <th key={i} style={{textAlign:i<2?"left":"right",padding:"7px 5px",color:C.navy,fontWeight:700}}>{h}</th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {products.map((p,i)=>(
+            <tr key={i} style={{borderBottom:`1px solid ${C.border}`,background:i%2===0?"#FAFBFC":C.card}}>
+              <td style={{padding:"5px",color:C.textLight,fontSize:10}}>{i+1}</td>
+              <td style={{padding:"5px",fontWeight:500,maxWidth:260,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}} title={`${p.name} (${p.itemId})`}>
+                {p.name||p.itemId}<span style={{fontSize:9,color:C.textLight,marginLeft:5}}>({p.itemId})</span>
+              </td>
+              <td style={{padding:"5px",textAlign:"right",color:C.navy,fontWeight:600}}>{fmt(p.atc)}</td>
+              <td style={{padding:"5px",textAlign:"right",color:p.purchases>0?C.teal:C.red,fontWeight:600}}>{p.purchases}</td>
+              <td style={{padding:"5px",textAlign:"right",fontWeight:700,color:C.orange}}>{fmt(p.abandon)}</td>
+              <td style={{padding:"5px",textAlign:"right",fontWeight:700,color:p.abandonRate>0.9?C.red:p.abandonRate>0.7?C.orange:C.yellow}}>{pct(p.abandonRate)}</td>
+              {showCost&&<td style={{padding:"5px",textAlign:"right",color:C.orange,fontWeight:500}}>{p.cost>0?euro(p.cost):"–"}</td>}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
 /* ───────── MAIN ───────── */
 export default function Dashboard(){
   const[ga4,setGa4]=useState(null);const[gAds,setGAds]=useState(null);const[meta,setMeta]=useState(null);
@@ -527,6 +561,27 @@ export default function Dashboard(){
     const paidBestConv=paidAll.filter(p=>p.views>=20&&p.purchases>0).sort((a,b)=>(b.purchases/b.views)-(a.purchases/a.views)).slice(0,10);
     const paidZeroConv=paidAll.filter(p=>p.views>=50&&p.totalPurch===0&&!paidTop20Ids.has(p.itemId)).slice(0,15);
 
+    // ABANDON PANIER : produits avec le plus d'ATC sans achat, par canal
+    // Organic abandon
+    const orgAbandon=src.products
+      .filter(r=>(r.orgAtc||0)>=10)
+      .map(r=>({itemId:r.itemId,name:r.name,
+        atc:r.orgAtc||0,purchases:r.orgPurch||0,
+        abandon:(r.orgAtc||0)-(r.orgPurch||0),
+        abandonRate:(r.orgAtc||0)>0?((r.orgAtc||0)-(r.orgPurch||0))/(r.orgAtc||0):0,
+        cost:getCost(r.itemId)}))
+      .sort((a,b)=>b.abandon-a.abandon).slice(0,15);
+
+    // Paid abandon
+    const paidAbandon=src.products
+      .filter(r=>(r.paidAtc||0)>=10)
+      .map(r=>({itemId:r.itemId,name:r.name,
+        atc:r.paidAtc||0,purchases:r.paidPurch||0,
+        abandon:(r.paidAtc||0)-(r.paidPurch||0),
+        abandonRate:(r.paidAtc||0)>0?((r.paidAtc||0)-(r.paidPurch||0))/(r.paidAtc||0):0,
+        cost:getCost(r.itemId)}))
+      .sort((a,b)=>b.abandon-a.abandon).slice(0,15);
+
     // WASTEFUL: spend > 20€, 0 achat toutes sources
     const wasteful=src.products.map(r=>({itemId:r.itemId,name:r.name,views:r.paidViews||0,atc:r.paidAtc||0,purchases:(r.allPurch||0)+(r.orgPurch||0)+(r.paidPurch||0),cost:getCost(r.itemId)})).filter(p=>p.cost>20&&p.purchases===0).sort((a,b)=>b.cost-a.cost).slice(0,10);
 
@@ -535,8 +590,8 @@ export default function Dashboard(){
       orgViews:t.orgViews,orgAtcRate:t.orgViews>0?t.orgAtc/t.orgViews:0,orgConvRate:t.orgViews>0?t.orgPurch/t.orgViews:0,orgPurch:t.orgPurch,orgShare:t.allViews>0?t.orgViews/t.allViews:0,
       paidViews:t.paidViews,paidAtcRate:t.paidViews>0?t.paidAtc/t.paidViews:0,paidConvRate:t.paidViews>0?t.paidPurch/t.paidViews:0,paidPurch:t.paidPurch,paidShare:t.allViews>0?t.paidViews/t.allViews:0,
       totalGCost:histMode&&histAnalysis?histAnalysis.googleSpend:(gAds?.total||0),totalMCost:histMode&&histAnalysis?histAnalysis.metaSpend:(meta?.total||0),
-      orgTop20,orgBestConv,orgZeroConv,
-      paidTop20,paidBestConv,paidZeroConv,wasteful,
+      orgTop20,orgBestConv,orgZeroConv,orgAbandon,
+      paidTop20,paidBestConv,paidZeroConv,wasteful,paidAbandon,
     };
   },[ga4,gAds,meta,histMode,histAnalysis]);
 
@@ -697,6 +752,13 @@ export default function Dashboard(){
             <TableBlock title="Top 20 produits · par vues" subtitle="Taux ATC : vert >4%, rouge <2%" titleColor={C.teal} products={analysis.orgTop20}/>
             <TableBlock title="✅ Meilleures conversions · à pousser en SEO" subtitle="≥20 vues, au moins 1 achat, triés par taux de conv." titleColor={C.green} products={analysis.orgBestConv}/>
             <TableBlock title="⚠️ 50+ vues organic · 0 achat · trafic SEO gaspillé" subtitle="Hors Top 20. Pages à optimiser (contenu, prix, CTA)." titleColor={C.red} products={analysis.orgZeroConv}/>
+            {analysis.orgAbandon.length>0&&(
+              <div data-pdf-block style={{marginBottom:18}}>
+                <div style={{fontSize:12,fontWeight:700,color:C.orange,marginBottom:3}}>🛒 Paniers abandonnés organic · Top 15 par volume</div>
+                <div style={{fontSize:10,color:C.textLight,marginBottom:7}}>≥10 ATC. Rouge &gt;90% abandon, orange &gt;70%. Trié par nombre d'abandons absolu.</div>
+                <AbandonTable products={analysis.orgAbandon}/>
+              </div>
+            )}
           </div>
 
           {/* ══ BLOC PAID ══ */}
@@ -717,6 +779,13 @@ export default function Dashboard(){
             <TableBlock title="Top 20 produits · par vues paid" subtitle="Taux ATC : vert >4%, rouge <2%" titleColor={C.orange} products={analysis.paidTop20} showCost={!!hasCosts}/>
             <TableBlock title="✅ Meilleures conversions paid · à scaler" subtitle="≥20 vues paid, au moins 1 achat, triés par taux de conv." titleColor={C.green} products={analysis.paidBestConv} showCost={!!hasCosts}/>
             <TableBlock title="⚠️ 50+ vues paid · 0 achat" subtitle="Hors Top 20. Audience ou landing page à revoir." titleColor={C.red} products={analysis.paidZeroConv} showCost={!!hasCosts}/>
+            {analysis.paidAbandon.length>0&&(
+              <div data-pdf-block style={{marginBottom:18}}>
+                <div style={{fontSize:12,fontWeight:700,color:C.orange,marginBottom:3}}>🛒 Paniers abandonnés paid · Top 15 par volume</div>
+                <div style={{fontSize:10,color:C.textLight,marginBottom:7}}>≥10 ATC. Rouge &gt;90% abandon, orange &gt;70%. Trié par nombre d'abandons absolu.</div>
+                <AbandonTable products={analysis.paidAbandon} showCost={!!hasCosts}/>
+              </div>
+            )}
             <TableBlock title="🔥 Budget gaspillé · >20€ dépensé · 0 achat toutes sources" subtitle="Candidats à couper ou retravailler." titleColor={C.orange} products={analysis.wasteful} showCost={true}/>
           </div>
 
